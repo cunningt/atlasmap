@@ -12,6 +12,8 @@ ARGS="$@"
 function displayHelp() {
     echo "This script helps you build the AtlasMap monorepo."
     echo "The available options are:"
+    echo " --docker-user           Docker user for Docker Hub."
+    echo " --docker-password       Docker password for Docker Hub."
     echo " --skip-tests            Skips the test execution."
     echo " --skip-image-builds     Skips image builds."
     echo " --with-image-streams    Builds everything using image streams."
@@ -79,6 +81,9 @@ function init_options() {
   RELEASE_VERSION=$(readopt --release-version $ARGS 2> /dev/null)
   DEVELOPMENT_VERSION=$(readopt --development-version $ARGS 2> /dev/null)
 
+  DOCKER_USER=$(readopt --docker-user $ARGS 2> /dev/null)
+  DOCKER_PASSWORD=$(readopt --docker-password $ARGS 2> /dev/null)
+
   # Internal variable default values
   OC_OPTS=""
   MAVEN_PARAMETERS=""
@@ -117,6 +122,13 @@ function init_options() {
   else
     MAVEN_PARAMETERS="$MAVEN_PARAMETERS -Dfabric8.mode=kubernetes"
   fi
+}
+
+docker_login() {
+    if [ -n "$DOCKER_USER" ] && [ -n "$DOCKER_PASSWORD" ]; then
+        echo "==== Login to Docker Hub"
+        docker login -u "$DOCKER_USER" -p "$DOCKER_PASSWORD"
+    fi
 }
 
 function parent() {
@@ -164,6 +176,15 @@ if [ -n "$HELP" ]; then
    exit 0
 fi
 
+"${MAVEN_CMD}" -N install
+for module in $(modules_to_build)
+do
+  echo "=========================================================="
+  echo "Building ${module} ...."
+  echo "=========================================================="
+  eval "${module}"
+done
+
 if [ -n "$RELEASE_VERSION" ]; then
   echo "=========================================================="
   echo "Performing Maven Release ...."
@@ -172,25 +193,27 @@ if [ -n "$RELEASE_VERSION" ]; then
                  -DreleaseVersion=${RELEASE_VERSION} \
                  -DdevelopmentVersion=${DEVELOPMENT_VERSION} \
                  -Pfabric8,release,community-release \
+                 -Darguments="-DskipTests -Dmaven.javadoc.skip=true" \
                  release:prepare
   "${MAVEN_CMD}" -Dtag=atlasmap-${RELEASE_VERSION} \
                  -DreleaseVersion=${RELEASE_VERSION} \
                  -DdevelopmentVersion=${DEVELOPMENT_VERSION} \
                  -Pfabric8,release,community-release \
+                 -Darguments="-DskipTests -Dmaven.javadoc.skip=true" \
                  release:perform
 
-  # Push the branch release changes and the tag.
-  git push origin HEAD
-  git push origin atlasmap-${RELEASE_VERSION}
-else
+  if [ -n "$DOCKER_USER" ] && [ -n "$DOCKER_PASSWORD" ]; then
+    echo "=========================================================="
+    echo "Pushing docker images to Docker Hub...."
+    echo "=========================================================="
+    ATLASMAP_IMAGE="atlasmap/atlasmap"
+    MAJOR_MINOR_VERSION=$(echo $RELEASE_VERSION | cut -f1,2 -d'.')
 
-  "${MAVEN_CMD}" -N install
-  for module in $(modules_to_build)
-  do
-    echo "=========================================================="
-    echo "Building ${module} ...."
-    echo "=========================================================="
-    eval "${module}"
-  done
+    docker_login
+
+    docker tag "${ATLASMAP_IMAGE}:${RELEASE_VERSION}" "${ATLASMAP_IMAGE}:${MAJOR_MINOR_VERSION}"
+    docker push "${ATLASMAP_IMAGE}:${RELEASE_VERSION}"
+    docker push "${ATLASMAP_IMAGE}:${MAJOR_MINOR_VERSION}"
+ fi
 
 fi
